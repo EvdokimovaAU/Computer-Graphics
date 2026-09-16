@@ -160,7 +160,6 @@ bool D3D12Context::LoadScene(Scene scene)
     char* lastSlash = strrchr(exeDirA, '\\');
     if (lastSlash) *(lastSlash + 1) = '\0';
     const fs::path modelsDir = fs::path(exeDirA) / "models";
-    // Decode before releasing the current scene.
     std::vector<unsigned short> terrainHeights;
     int terrainWidth = 0, terrainHeight = 0;
     if (scene == Scene::Terrain)
@@ -174,6 +173,7 @@ bool D3D12Context::LoadScene(Scene scene)
             OutputDebugStringA((error + "\n").c_str());
             return false;
         }
+        StitchTerrainHeightmap(heightmap);
         terrainWidth = heightmap.Width;
         terrainHeight = heightmap.Height;
         terrainHeights = std::move(heightmap.Heights);
@@ -947,7 +947,6 @@ void D3D12Context::BuildOctree()
     m_octreeNodes.clear();
     m_octreeRoot = -1;
 
-    // Terrain has its own quadtree; the generic scene octree is not used for it.
     if (m_currentScene == Scene::Terrain)
         return;
 
@@ -2216,14 +2215,12 @@ bool D3D12Context::CreatePipelineState()
 // геометрия
 bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heights, int width, int height)
 {
-    // Keep 16-bit source precision; sample a bounded grid in linear height space.
     constexpr int maxGridSide = TerrainGridCells + 1;
     constexpr float terrainSize = 2000.0f;
     constexpr float heightScale = 400.0f;
     const auto heightRange = std::minmax_element(heights.begin(), heights.end());
     const float sourceMin = float(*heightRange.first);
     const float sourceSpan = float(*heightRange.second) - sourceMin;
-    // Map the actual source range to the intended vertical relief, preserving shape.
     const float heightMultiplier = sourceSpan > 0.0f ? heightScale / sourceSpan : 0.0f;
     const int columns = maxGridSide;
     const int rows = maxGridSide;
@@ -2271,7 +2268,6 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
     std::vector<Submesh> tileRanges;
     m_terrainNodes.clear();
     m_terrainTilesEnabled.fill(true);
-    // Prebuild all four levels. Index i identifies the same node, mesh and object.
     std::function<int(int, int, int, UINT)> buildNode = [&](int tileX, int tileZ, int cells, UINT level)
     {
         const int nodeIndex = int(m_terrainNodes.size());
@@ -2292,7 +2288,7 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
                 bounds.Max.y = (std::max)(bounds.Max.y, y);
             }
         const UINT firstIndex = UINT(indices.size());
-        const int step = cells / TerrainLeafCells; // 8, 4, 2, 1: increasingly dense geometry.
+        const int step = cells / TerrainLeafCells;
         for (int z = tileZ; z < endZ; z += step)
             for (int x = tileX; x < endX; x += step)
             {
@@ -2302,8 +2298,6 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
                     indices.insert(indices.end(), { a, c, b, b, c, d });
                 else
                 {
-                    // Full-resolution outer edges coincide at ANY adjacent LOD.
-                    // Fan only the boundary cells; no skirts or overlapping parents.
                     std::vector<uint32_t> edge;
                     for (int i = 0; i < step; i += (x == tileX ? 1 : step)) edge.push_back(a + i * columns);
                     for (int i = 0; i < step; i += (z + step == endZ ? 1 : step)) edge.push_back(c + i);
@@ -2314,7 +2308,6 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
                         indices.insert(indices.end(), { center, edge[i], edge[(i + 1) % edge.size()] });
                 }
             }
-        // Measure loss of shape against the fine grid, rather than distance alone.
         float maxError = 0.0f;
         if (step > 1)
             for (int z = tileZ; z < endZ; ++z)
@@ -2331,7 +2324,6 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
                         : d + (1.0f - u) * (c - d) + (1.0f - v) * (b - d);
                     maxError = (std::max)(maxError, std::abs(vertices[size_t(z) * columns + x].p.y - coarse));
                 }
-        // Conservative margin for the finer boundary fan topology.
         m_terrainNodes[nodeIndex].MaxHeightError = 2.0f * maxError;
         tileRanges.push_back({ firstIndex, UINT(indices.size()) - firstIndex, -1, 0 });
         tileBounds.push_back(bounds);
@@ -2410,7 +2402,6 @@ void D3D12Context::SetTerrainTileEnabled(UINT tileIndex, bool enabled)
 void D3D12Context::SetTerrainForcedLod(int level)
 {
     m_terrainForcedLod = level >= 0 && level <= 3 ? level : -1;
-    // A demonstration mode must not leave hysteresis from a forced level in AUTO.
     for (auto& node : m_terrainNodes) node.Split = false;
 }
 
@@ -2431,7 +2422,6 @@ void D3D12Context::SelectTerrainNode(UINT nodeIndex, const Frustum* frustum, boo
 {
     TerrainNode& node = m_terrainNodes[nodeIndex];
     if (cameraPass) ++m_terrainCullStats[0];
-    // Test the parent before visibility masks or LOD work; reject the entire subtree.
     if (frustum && !IntersectsFrustum(m_sceneMeshes[nodeIndex].BoundsLocal, *frustum))
     {
         if (cameraPass)
@@ -2442,7 +2432,6 @@ void D3D12Context::SelectTerrainNode(UINT nodeIndex, const Frustum* frustum, boo
         }
         return;
     }
-    // Preserve manual visibility of the original 8x8 leaf tiles even at coarse LOD.
     int enabled = 0, total = 0;
     for (int z = node.Z / TerrainLeafCells; z < (node.Z + node.Cells) / TerrainLeafCells; ++z)
         for (int x = node.X / TerrainLeafCells; x < (node.X + node.Cells) / TerrainLeafCells; ++x)
@@ -2456,7 +2445,6 @@ void D3D12Context::SelectTerrainNode(UINT nodeIndex, const Frustum* frustum, boo
     const float dy = m_cameraPos.y - (std::clamp)(m_cameraPos.y, b.Min.y, b.Max.y);
     const float dz = m_cameraPos.z - (std::clamp)(m_cameraPos.z, b.Min.z, b.Max.z);
     const float size = (std::max)(b.Max.x - b.Min.x, b.Max.z - b.Min.z);
-    // Separate split/merge distances avoid oscillation near the threshold.
     const float threshold = size * (node.Split ? 1.5f : 1.2f);
     const float distance = (std::max)(1.0f, std::sqrt(dx * dx + dy * dy + dz * dz));
     const float projectedError = node.MaxHeightError * float(m_height) /
@@ -3104,8 +3092,6 @@ void D3D12Context::DrawSceneShadowGeometry(
         return;
     }
 
-    // Shadow casters use the light's frustum, not the camera's: off-screen hills
-    // can still cast shadows onto visible terrain. Do not overwrite camera stats.
     const Frustum lightFrustum = BuildMatrixFrustum(XMLoadFloat4x4(&viewMatrix) * XMLoadFloat4x4(&projMatrix));
     UpdateTerrainSelection(&lightFrustum, false);
 
@@ -3155,8 +3141,6 @@ void D3D12Context::DrawSceneShadowGeometry(
     {
         const SceneObject& object = m_sceneObjects[objectIndex];
 
-        // Disabled terrain tiles must not cast shadows either. Camera culling
-        // is deliberately not used here: off-screen tiles can cast visible shadows.
         if (!object.Enabled || (m_currentScene == Scene::Terrain && !m_terrainNodes[objectIndex].Selected))
             continue;
 

@@ -294,8 +294,8 @@ private:
     std::vector<TerrainNode> m_terrainNodes;
     std::array<bool, 64> m_terrainTilesEnabled{};
     std::array<UINT, 4> m_terrainLodCounts{};
-    std::array<UINT, 3> m_terrainCullStats{}; // visited, rejected roots, skipped descendants (camera only)
-    int m_terrainForcedLod = -1; // -1: AUTO, 0..3: fixed depth for demonstration
+    std::array<UINT, 3> m_terrainCullStats{};
+    int m_terrainForcedLod = -1;
     UINT m_terrainTriangleCount = 0;
     bool m_terrainLodDebug = false;
     std::vector<std::string> m_materialDiffusePaths;

@@ -6,7 +6,7 @@ cbuffer PerObjectCB : register(b0)
     float4 UVTransform;
     float4 TimeParams;
     float4 TessellationParams;
-    float4 TerrainDebugParams; // UV origin, size, enabled
+    float4 TerrainDebugParams;
 };
 
 Texture2D gTex : register(t0);

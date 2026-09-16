@@ -151,7 +151,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 {
     if (TerrainPreview != 0)
     {
-        // Keep terrain contours aligned: RGB lens distortion created false colored ridges.
         float3 hdr = max(HDRColorTex.Sample(LinearSampler, input.UV).rgb, 0.0f.xxx);
         float3 color = ApplyExposureToneMapping(hdr, 1.2f);
         return float4(pow(saturate(color), 1.0f / 2.2f), 1.0f);
