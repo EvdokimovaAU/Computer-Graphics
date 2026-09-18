@@ -135,6 +135,7 @@
     <ClCompile Include="InputDevice.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="RenderingSystem.cpp" />
+    <ClCompile Include="TerrainHeightmap.cpp" />
     <ClCompile Include="tiny_obj_loader.cc" />
     <ClCompile Include="Vertex.cpp" />
     <ClCompile Include="Win32Window.cpp" />

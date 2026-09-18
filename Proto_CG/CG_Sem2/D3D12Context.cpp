@@ -1,15 +1,16 @@
 #define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include "D3D12Context.h"
 #include "TerrainHeightmap.h"
 #include <windows.h>
-#include <d3dcompiler.h>
+#include <d3dcompiler.h> // компилятор шейдеров
 #include <vector>
-#include <wrl.h> 
+#include <wrl.h> // умные указатели для COM(сист.объекты для о тимизации)
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 #include <limits>
-#include <unordered_map>
+#include <unordered_map> // хэш таблица(поиск по ключу)
 #include <filesystem>
 #include <functional>
 
@@ -2212,32 +2213,41 @@ bool D3D12Context::CreatePipelineState()
     return SUCCEEDED(m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pso)));
 }
 
-// геометрия
+
+
+// ТЕРРЕЙН----------------------------------------------------------------------------------------------------------
 bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heights, int width, int height)
 {
-    constexpr int maxGridSide = TerrainGridCells + 1;
+    constexpr int maxGridSide = TerrainGridCells + 1; // сетка в вершинах
     constexpr float terrainSize = 2000.0f;
     constexpr float heightScale = 400.0f;
-    const auto heightRange = std::minmax_element(heights.begin(), heights.end());
+    const auto heightRange = std::minmax_element(heights.begin(), heights.end()); // мин и макс высот
     const float sourceMin = float(*heightRange.first);
-    const float sourceSpan = float(*heightRange.second) - sourceMin;
-    const float heightMultiplier = sourceSpan > 0.0f ? heightScale / sourceSpan : 0.0f;
-    const int columns = maxGridSide;
-    const int rows = maxGridSide;
+    const float sourceSpan = float(*heightRange.second) - sourceMin; 
+    const float heightMultiplier = sourceSpan > 0.0f ? heightScale / sourceSpan : 0.0f; // растягивание диапазона высот
+    // размеры сетки
+    const int columns = maxGridSide; // кол-во по х
+    const int rows = maxGridSide; // кол-во по z
     const float longestSide = float((std::max)(width - 1, height - 1));
     const float sizeX = terrainSize * (width - 1) / longestSide;
     const float sizeZ = terrainSize * (height - 1) / longestSide;
+    // шаг между соседними вершинами
     const float stepX = sizeX / (columns - 1);
     const float stepZ = sizeZ / (rows - 1);
-    struct TerrainVertex { XMFLOAT3 p; XMFLOAT3 n; XMFLOAT2 uv; };
-    std::vector<TerrainVertex> vertices(size_t(columns) * rows);
+    
+    struct TerrainVertex { XMFLOAT3 p; XMFLOAT3 n; XMFLOAT2 uv; }; // вершины: позиция, нормаль, текстурные координаты
+    std::vector<TerrainVertex> vertices(size_t(columns) * rows); // массив всех вершин
     float minHeight = heightScale, maxHeight = 0.0f;
+
     for (int z = 0; z < rows; ++z)
     {
         for (int x = 0; x < columns; ++x)
         {
+            // нормализованные координаты
             const float u = float(x) / (columns - 1);
             const float v = float(z) / (rows - 1);
+
+            // билинейная интерполяция
             const float sx = u * (width - 1), sz = v * (height - 1);
             const int x0 = int(sx), z0 = int(sz);
             const int x1 = (std::min)(x0 + 1, width - 1);
@@ -2246,151 +2256,191 @@ bool D3D12Context::CreateTerrainGeometry(const std::vector<unsigned short>& heig
             const float a = heights[size_t(z0) * width + x0] * (1.0f - tx) + heights[size_t(z0) * width + x1] * tx;
             const float b = heights[size_t(z1) * width + x0] * (1.0f - tx) + heights[size_t(z1) * width + x1] * tx;
             const float y = (a * (1.0f - tz) + b * tz - sourceMin) * heightMultiplier;
-            vertices[size_t(z) * columns + x] = { {u * sizeX - sizeX * 0.5f, y, v * sizeZ - sizeZ * 0.5f}, {0, 1, 0}, {u, v} };
+            vertices[size_t(z) * columns + x] = { {u * sizeX - sizeX * 0.5f, y, v * sizeZ - sizeZ * 0.5f}, {0, 1, 0}, {u, v} }; // запись вершины
+            // обновление реального диапазона высот
             minHeight = (std::min)(minHeight, y);
             maxHeight = (std::max)(maxHeight, y);
         }
     }
+
     for (int z = 0; z < rows; ++z)
     {
         for (int x = 0; x < columns; ++x)
         {
+            // вычисление нормалей
             const int left = (std::max)(0, x - 1), right = (std::min)(columns - 1, x + 1);
             const int back = (std::max)(0, z - 1), front = (std::min)(rows - 1, z + 1);
             const float dx = (vertices[size_t(z) * columns + right].p.y - vertices[size_t(z) * columns + left].p.y) / ((right - left) * stepX);
             const float dz = (vertices[size_t(front) * columns + x].p.y - vertices[size_t(back) * columns + x].p.y) / ((front - back) * stepZ);
-            XMStoreFloat3(&vertices[size_t(z) * columns + x].n, XMVector3Normalize(XMVectorSet(-dx, 1.0f, -dz, 0.0f)));
+            XMStoreFloat3(&vertices[size_t(z) * columns + x].n, XMVector3Normalize(XMVectorSet(-dx, 1.0f, -dz, 0.0f))); // ветор нормали 
         }
     }
-    std::vector<uint32_t> indices;
-    indices.reserve(size_t(columns - 1) * (rows - 1) * 6);
-    std::vector<BoundingBox> tileBounds;
-    std::vector<Submesh> tileRanges;
+
+    std::vector<uint32_t> indices; // массив индексов, какие вершины образуют треугольники
+    indices.reserve(size_t(columns - 1) * (rows - 1) * 6); // заранее выделяем макс памяти (6 индексов= 2 треугольника × 3 вершины)
+    std::vector<BoundingBox> tileBounds; // массив границ тайла
+    std::vector<Submesh> tileRanges; // массив диапазонов индексов для каждого тайла(откуда докуда рисовать)
+
+    // отчитска LOD дерерва
     m_terrainNodes.clear();
-    m_terrainTilesEnabled.fill(true);
+    m_terrainTilesEnabled.fill(true); // включение всех тайлов
+
+    // рекурсивная лямбда функция 
     std::function<int(int, int, int, UINT)> buildNode = [&](int tileX, int tileZ, int cells, UINT level)
     {
+        // индекс узла
         const int nodeIndex = int(m_terrainNodes.size());
         TerrainNode node{};
         node.X = tileX; node.Z = tileZ; node.Cells = cells; node.Level = level;
-        m_terrainNodes.push_back(node);
-        const int endX = tileX + cells, endZ = tileZ + cells;
-        BoundingBox bounds{};
-        bounds.Min = XMFLOAT3(vertices[size_t(tileZ) * columns + tileX].p.x, heightScale,
+        m_terrainNodes.push_back(node); //  добавление узла в массив всех узлов квадродерева
+
+        const int endX = tileX + cells, endZ = tileZ + cells; // правый нижний угол тайла
+        BoundingBox bounds{}; // границы тайля для culling 
+        bounds.Min = XMFLOAT3(vertices[size_t(tileZ) * columns + tileX].p.x, heightScale, // левый верхний угол тайла У завышен (heightScale)
             vertices[size_t(tileZ) * columns + tileX].p.z);
-        bounds.Max = XMFLOAT3(vertices[size_t(endZ) * columns + endX].p.x, 0.0f,
+        bounds.Max = XMFLOAT3(vertices[size_t(endZ) * columns + endX].p.x, 0.0f, // правый нижний угол У занижен (0)
             vertices[size_t(endZ) * columns + endX].p.z);
+
         for (int z = tileZ; z <= endZ; ++z)
             for (int x = tileX; x <= endX; ++x)
             {
                 const float y = vertices[size_t(z) * columns + x].p.y;
+                // уточнение min/max высоты тайла
                 bounds.Min.y = (std::min)(bounds.Min.y, y);
                 bounds.Max.y = (std::max)(bounds.Max.y, y);
             }
-        const UINT firstIndex = UINT(indices.size());
-        const int step = cells / TerrainLeafCells;
+        const UINT firstIndex = UINT(indices.size()); // запоминием индекс начла тайла
+        const int step = cells / TerrainLeafCells; // шаг LOD: сколько ячеек объединяем в одну «грубую» (чем больше level, тем крупнее step)
+
+        // Проходим по укрупнённым ячейкам (шаг = step)
         for (int z = tileZ; z < endZ; z += step)
             for (int x = tileX; x < endX; x += step)
             {
-                const uint32_t a = z * columns + x, b = a + step;
-                const uint32_t c = a + step * columns, d = c + step;
+                const uint32_t a = z * columns + x, b = a + step; // верхние
+                const uint32_t c = a + step * columns, d = c + step; // нижние
                 if (step == 1 || (x != tileX && z != tileZ && x + step != endX && z + step != endZ))
-                    indices.insert(indices.end(), { a, c, b, b, c, d });
+                    indices.insert(indices.end(), { a, c, b, b, c, d }); // внутренняя ячейка, квадрат из 2 треугольников
                 else
                 {
-                    std::vector<uint32_t> edge;
-                    for (int i = 0; i < step; i += (x == tileX ? 1 : step)) edge.push_back(a + i * columns);
-                    for (int i = 0; i < step; i += (z + step == endZ ? 1 : step)) edge.push_back(c + i);
-                    for (int i = 0; i < step; i += (x + step == endX ? 1 : step)) edge.push_back(d - i * columns);
-                    for (int i = 0; i < step; i += (z == tileZ ? 1 : step)) edge.push_back(b - i);
-                    const uint32_t center = a + (step / 2) * columns + step / 2;
-                    for (size_t i = 0; i < edge.size(); ++i)
+                    std::vector<uint32_t> edge; // граничная ячейка 
+                    // заполнение 
+                    for (int i = 0; i < step; i += (x == tileX ? 1 : step)) edge.push_back(a + i * columns); // слева
+                    for (int i = 0; i < step; i += (z + step == endZ ? 1 : step)) edge.push_back(c + i); // низ
+                    for (int i = 0; i < step; i += (x + step == endX ? 1 : step)) edge.push_back(d - i * columns); // справа
+                    for (int i = 0; i < step; i += (z == tileZ ? 1 : step)) edge.push_back(b - i); // верх
+
+                    const uint32_t center = a + (step / 2) * columns + step / 2; // центр ячейки — вокруг него строим треугольники.
+                    for (size_t i = 0; i < edge.size(); ++i) // соединяем центр с каждой парой соседних точек контура
                         indices.insert(indices.end(), { center, edge[i], edge[(i + 1) % edge.size()] });
                 }
             }
-        float maxError = 0.0f;
-        if (step > 1)
+        float maxError = 0.0f; // насколько грубая поверхность LOD отличается от точной
+        if (step > 1) // LOD грубый 
             for (int z = tileZ; z < endZ; ++z)
-                for (int x = tileX; x < endX; ++x)
+                for (int x = tileX; x < endX; ++x) 
                 {
+                    // коорд. угла грубой ячейки(2треуг)
                     const int cellX = tileX + ((x - tileX) / step) * step;
                     const int cellZ = tileZ + ((z - tileZ) / step) * step;
+                    // лок. координаты внутри груб ячейки(0, 1))
                     const float u = float(x - cellX) / step, v = float(z - cellZ) / step;
+                    // высоты четырёх углов грубой ячейки
                     const float a = vertices[size_t(cellZ) * columns + cellX].p.y;
                     const float b = vertices[size_t(cellZ) * columns + cellX + step].p.y;
                     const float c = vertices[size_t(cellZ + step) * columns + cellX].p.y;
                     const float d = vertices[size_t(cellZ + step) * columns + cellX + step].p.y;
                     const float coarse = u + v <= 1.0f ? a + u * (b - a) + v * (c - a)
-                        : d + (1.0f - u) * (c - d) + (1.0f - v) * (b - d);
-                    maxError = (std::max)(maxError, std::abs(vertices[size_t(z) * columns + x].p.y - coarse));
+                        : d + (1.0f - u) * (c - d) + (1.0f - v) * (b - d); //  высота грубой поверхности в этой точке
+                    maxError = (std::max)(maxError, std::abs(vertices[size_t(z) * columns + x].p.y - coarse)); // макс разница
                 }
-        m_terrainNodes[nodeIndex].MaxHeightError = 2.0f * maxError;
-        tileRanges.push_back({ firstIndex, UINT(indices.size()) - firstIndex, -1, 0 });
-        tileBounds.push_back(bounds);
+        m_terrainNodes[nodeIndex].MaxHeightError = 2.0f * maxError; // удв. ошибка для разных LOD
+        tileRanges.push_back({ firstIndex, UINT(indices.size()) - firstIndex, -1, 0 }); //  диапазон индексов тайла (начало и количество)
+        tileBounds.push_back(bounds); // границы тайла.
+
         if (level < 3)
-            for (int child = 0; child < 4; ++child)
+            for (int child = 0; child < 4; ++child) // создаем 4 дочерних тайла
             {
                 const int childIndex = buildNode(tileX + (child % 2) * cells / 2,
-                    tileZ + (child / 2) * cells / 2, cells / 2, level + 1);
-                m_terrainNodes[nodeIndex].Children[child] = childIndex;
+                    tileZ + (child / 2) * cells / 2, cells / 2, level + 1); // вдвое меньше + уровень 
+                m_terrainNodes[nodeIndex].Children[child] = childIndex; // индекс дочки
             }
         return nodeIndex;
     };
+
+    // построение дерева с корневого тайла (весь ландшафт, уровень 0)
     buildNode(0, 0, TerrainGridCells, 0);
     auto uploadBuffer = [&](const void* data, UINT bytes, ComPtr<ID3D12Resource>& buffer) -> bool
+        // лямбда: создаёт GPU-буфер и копирует в него данные. Возвращает true при успехе.
     {
         D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD; // куча GPU на CPU записанная
         D3D12_RESOURCE_DESC desc{};
-        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; // линейный буфер
         desc.Width = bytes;
+        // стандартные параметры
         desc.Height = 1;
         desc.DepthOrArraySize = 1;
         desc.MipLevels = 1;
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        // ресурс на GPU
         if (FAILED(m_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&buffer)))) return false;
+
         void* mapped = nullptr;
-        const D3D12_RANGE noRead = { 0, 0 };
-        if (FAILED(buffer->Map(0, &noRead, &mapped))) return false;
-        std::memcpy(mapped, data, bytes);
-        buffer->Unmap(0, nullptr);
+        const D3D12_RANGE noRead = { 0, 0 }; // диапазон чтения CPU(0 так как мыы пишем, запись на gpu)
+        if (FAILED(buffer->Map(0, &noRead, &mapped))) return false; //  отображение памяти GPU в адресное пространство CPU.
+        std::memcpy(mapped, data, bytes); // копирование данных (вершин) в буфер
+        buffer->Unmap(0, nullptr); // закрытие отображения
         return true;
     };
-    const UINT vbSize = UINT(vertices.size() * sizeof(TerrainVertex));
-    const UINT ibSize = UINT(indices.size() * sizeof(uint32_t));
+    const UINT vbSize = UINT(vertices.size() * sizeof(TerrainVertex)); // размер вершинного буфера в байтах
+    const UINT ibSize = UINT(indices.size() * sizeof(uint32_t)); // размер индексоного буфера в байтах
+
+    // загрузка вершин на GPU 32бмтные
     if (!uploadBuffer(vertices.data(), vbSize, m_vertexBuffer) ||
         !uploadBuffer(indices.data(), ibSize, m_indexBuffer)) return false;
+
+    // описание вершинного буфера : адрес на GPU, размер, размер одной вершины(stride)
     m_vbView = { m_vertexBuffer->GetGPUVirtualAddress(), vbSize, sizeof(TerrainVertex) };
+    // описание индексного буфера : адрес на GPU, размер, формат индексов(32 - бит)
     m_ibView = { m_indexBuffer->GetGPUVirtualAddress(), ibSize, DXGI_FORMAT_R32_UINT };
-    m_indexCount = UINT(indices.size());
-    m_use32BitIndices = true;
+    m_indexCount = UINT(indices.size()); // общее число индексов
+    m_use32BitIndices = true; // 32 битные индексы исп
+    // один общий сабмеш на весь меш
     m_submeshes = { { 0, m_indexCount, -1, 0 } };
+
+    // границы всей модели в локальных координатах (для отсечения/коллизий)
     m_modelBoundsLocal.Min = XMFLOAT3(-sizeX * 0.5f, minHeight, -sizeZ * 0.5f);
     m_modelBoundsLocal.Max = XMFLOAT3(sizeX * 0.5f, maxHeight, sizeZ * 0.5f);
-    m_sceneMeshes.clear();
+
+    m_sceneMeshes.clear(); // очищаем список мешей сцены (тайлов) перед заполнением
+
     for (size_t i = 0; i < tileRanges.size(); ++i)
     {
-        MeshData tile = CaptureCurrentMesh();
-        tile.IndexCount = tileRanges[i].IndexCount;
-        tile.Submeshes = { tileRanges[i] };
-        tile.BoundsLocal = tileBounds[i];
-        m_sceneMeshes.push_back(std::move(tile));
+        MeshData tile = CaptureCurrentMesh(); // Копируем текущий меш
+        tile.IndexCount = tileRanges[i].IndexCount; // Задаём число индексов для этого тайла
+        tile.Submeshes = { tileRanges[i] }; // У тайла один сабмеш — его диапазон индексов
+        tile.BoundsLocal = tileBounds[i]; // задаем границу тайла
+        m_sceneMeshes.push_back(std::move(tile)); // Добавляем тайл в список мешей сцены
     }
     return true;
 }
 
+// кол-во тайлов ландшафта
 UINT D3D12Context::GetTerrainTileCount() const
 {
-    return m_currentScene == Scene::Terrain ? 64u : 0u;
+    return m_currentScene == Scene::Terrain ? 64u : 0u; // есть ли террейн, если да то возвращаем 64 тайла, иначе 0. 64 не кол-во пнг, а к котор можно обр по индк.
 }
 
+// проверяет, включён ли тайл ландшафта с данным индексом
 bool D3D12Context::IsTerrainTileEnabled(UINT tileIndex) const
 {
     return tileIndex < GetTerrainTileCount() && m_terrainTilesEnabled[tileIndex];
 }
 
+// включает или выключает тайл ландшафта по индексу
 void D3D12Context::SetTerrainTileEnabled(UINT tileIndex, bool enabled)
 {
     if (tileIndex < GetTerrainTileCount())
@@ -2399,12 +2449,14 @@ void D3D12Context::SetTerrainTileEnabled(UINT tileIndex, bool enabled)
     }
 }
 
+// принудительно задаёт уровень детализации (LOD) для всего ландшафта
 void D3D12Context::SetTerrainForcedLod(int level)
 {
-    m_terrainForcedLod = level >= 0 && level <= 3 ? level : -1;
-    for (auto& node : m_terrainNodes) node.Split = false;
+    m_terrainForcedLod = level >= 0 && level <= 3 ? level : -1; // если не 0-3 то принудительно
+    for (auto& node : m_terrainNodes) node.Split = false; // пересчет разбития
 }
 
+// обновляет, какие тайлы ландшафта видимы и какой у них LOD
 void D3D12Context::UpdateTerrainSelection(const Frustum* frustum, bool cameraPass)
 {
     if (m_currentScene != Scene::Terrain || m_terrainNodes.empty()) return;
@@ -2414,60 +2466,71 @@ void D3D12Context::UpdateTerrainSelection(const Frustum* frustum, bool cameraPas
         m_terrainCullStats.fill(0);
         m_terrainTriangleCount = 0;
     }
-    for (auto& node : m_terrainNodes) node.Selected = false;
-    SelectTerrainNode(0, frustum, cameraPass);
+    for (auto& node : m_terrainNodes) node.Selected = false; // снимаем флаг
+    SelectTerrainNode(0, frustum, cameraPass); // обходим дерево
 }
 
+// рекурсивно обходит узел квадродерева ландшафта: решает — рисовать его или разбить на детей
 void D3D12Context::SelectTerrainNode(UINT nodeIndex, const Frustum* frustum, bool cameraPass)
 {
-    TerrainNode& node = m_terrainNodes[nodeIndex];
-    if (cameraPass) ++m_terrainCullStats[0];
+    TerrainNode& node = m_terrainNodes[nodeIndex]; // Ссылка на текущий узел дерева LOD.
+
+    if (cameraPass) ++m_terrainCullStats[0];  // Счётчик [0] = сколько узлов всего проверено в этом кадре.
     if (frustum && !IntersectsFrustum(m_sceneMeshes[nodeIndex].BoundsLocal, *frustum))
     {
         if (cameraPass)
         {
-            ++m_terrainCullStats[1];
-            static constexpr UINT descendants[] = { 84, 20, 4, 0 };
-            m_terrainCullStats[2] += descendants[node.Level];
+            ++m_terrainCullStats[1]; // Счётчик [1] = сколько узлов отсечено (не видны).
+            static constexpr UINT descendants[] = { 84, 20, 4, 0 };  // Сколько потомков у узла на каждом уровне: уровень 0 → 84, 1 → 20, 2 → 4, 3 → 0
+            m_terrainCullStats[2] += descendants[node.Level]; // Счётчик [2] = сколько всего потомков отсечено вместе с этим узлом
         }
         return;
     }
-    int enabled = 0, total = 0;
+
+    int enabled = 0, total = 0; //  // Счётчики: сколько листовых тайлов внутри узла включено и сколько всего.
     for (int z = node.Z / TerrainLeafCells; z < (node.Z + node.Cells) / TerrainLeafCells; ++z)
         for (int x = node.X / TerrainLeafCells; x < (node.X + node.Cells) / TerrainLeafCells; ++x)
+            // Проходим по всем листовым тайлам, которые попадают в этот узел.
         {
             ++total;
             if (m_terrainTilesEnabled[z * 8 + x]) ++enabled;
         }
-    if (enabled == 0) { node.Split = false; return; }
-    const BoundingBox& b = m_sceneMeshes[nodeIndex].BoundsLocal;
+    if (enabled == 0) { node.Split = false; return; } // Если внутри узла нет ни одного включённого тайла — не разбиваем и выходим
+
+    const BoundingBox& b = m_sceneMeshes[nodeIndex].BoundsLocal; // // Границы узла в локальных координатах.
+
+    // Расстояние от камеры до ближайшей точки границ узла(по каждой оси)
     const float dx = m_cameraPos.x - (std::clamp)(m_cameraPos.x, b.Min.x, b.Max.x);
     const float dy = m_cameraPos.y - (std::clamp)(m_cameraPos.y, b.Min.y, b.Max.y);
     const float dz = m_cameraPos.z - (std::clamp)(m_cameraPos.z, b.Min.z, b.Max.z);
-    const float size = (std::max)(b.Max.x - b.Min.x, b.Max.z - b.Min.z);
-    const float threshold = size * (node.Split ? 1.5f : 1.2f);
-    const float distance = (std::max)(1.0f, std::sqrt(dx * dx + dy * dy + dz * dz));
+    // Размер узла по горизонтали
+    const float size = (std::max)(b.Max.x - b.Min.x, b.Max.z - b.Min.z); 
+    const float threshold = size * (node.Split ? 1.5f : 1.2f); // Порог расстояния: если камера ближе — узел стоит разбить.
+    const float distance = (std::max)(1.0f, std::sqrt(dx * dx + dy * dy + dz * dz)); //Реальное расстояние от камеры до узла (не меньше 1, чтобы не делить на 0).
     const float projectedError = node.MaxHeightError * float(m_height) /
         (2.0f * std::tan(XM_PIDIV4 * 0.5f) * distance);
-    const float pixelThreshold = node.Split ? 1.5f : 2.0f;
+    const float pixelThreshold = node.Split ? 1.5f : 2.0f; // Порог в пикселях: если ошибка больше — надо разбивать
     const bool refine = m_terrainForcedLod >= 0 ? int(node.Level) < m_terrainForcedLod
-        : distance < threshold || projectedError > pixelThreshold;
-    node.Split = node.Level < 3 && (enabled != total || refine);
+        : distance < threshold || projectedError > pixelThreshold; // Нужно ли уточнять (разбивать) узел
+    node.Split = node.Level < 3 && (enabled != total || refine); // Итоговое решение о разбиении:
+
     if (node.Split)
     {
-        for (int child : node.Children) SelectTerrainNode(UINT(child), frustum, cameraPass);
+        for (int child : node.Children) SelectTerrainNode(UINT(child), frustum, cameraPass);  // Если разбиваем — рекурсивно обрабатываем всех 4 детей.
     }
     else
     {
-        node.Selected = true;
-        m_sceneObjects[nodeIndex].DiffuseSrvIndex = m_terrainLodDebug ? 100 + node.Level : 0;
+        node.Selected = true;  // Узел выбран для отрисовки
+        m_sceneObjects[nodeIndex].DiffuseSrvIndex = m_terrainLodDebug ? 100 + node.Level : 0;  // Если включена отладка LOD — подставляем текстуру, цветную по уровню LOD.
         if (cameraPass)
         {
-            ++m_terrainLodCounts[node.Level];
-            m_terrainTriangleCount += m_sceneMeshes[nodeIndex].IndexCount / 3;
+            ++m_terrainLodCounts[node.Level]; // Считаем, сколько узлов каждого уровня LOD нарисовано.
+            m_terrainTriangleCount += m_sceneMeshes[nodeIndex].IndexCount / 3; // Прибавляем треугольники этого узла (индексов / 3 = треугольников)
         }
     }
 }
+
+//-------------------------------------------------------------------------------------------------------------
 
 bool D3D12Context::CreateGeometry()
 {

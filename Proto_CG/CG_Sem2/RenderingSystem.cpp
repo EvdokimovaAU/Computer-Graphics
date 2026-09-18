@@ -4281,7 +4281,6 @@ bool RenderingSystem::CreateWaterConstantBuffer()
     return true;
 }
 
-
 void RenderingSystem::UpdateLightingConstants()
 {
     if (m_deferredLightCBMappedData == nullptr)
@@ -4617,7 +4616,6 @@ void RenderingSystem::UpdateShadowMatrices(DeferredLightCB& cb) const
         cb.ShadowParams.w = 0.0015f;
     }
 }
-
 
 void RenderingSystem::UpdateWaterConstants()
 {

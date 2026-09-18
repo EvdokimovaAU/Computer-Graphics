@@ -1,7 +1,7 @@
 #include "Application.h"
 #include <windows.h>
 #include <algorithm>
-#include <cwchar>
+#include <cwchar> // для широких строк
 
 Application::Application(HINSTANCE hInstance, int nCmdShow)
     : m_hInstance(hInstance), m_nCmdShow(nCmdShow)
@@ -10,9 +10,11 @@ Application::Application(HINSTANCE hInstance, int nCmdShow)
 
 bool Application::Initialize()
 {
+    // параметры окна
     constexpr UINT windowWidth = 800;
     constexpr UINT windowHeight = 600;
 
+    // проврека экрана
     if (!m_window.Create(
         m_hInstance,
         m_nCmdShow,
@@ -44,7 +46,7 @@ bool Application::Initialize()
 
 int Application::Run()
 {
-    MSG msg{};
+    MSG msg{}; // описсание события окна
     while (true)
     {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
@@ -62,11 +64,13 @@ int Application::Run()
             continue;
         }
 
+        // переключения
         const bool scene1Down = m_input.IsKeyDown('1');
         const bool scene2Down = m_input.IsKeyDown('2');
         const bool scene3Down = m_input.IsKeyDown('3');
         const bool scene4Down = m_input.IsKeyDown('4');
         const bool scene5Down = m_input.IsKeyDown('5');
+        // дебаг
         const bool toggleFrustumDown = m_input.IsKeyDown('Q');
         const bool toggleOctreeDown = m_input.IsKeyDown('E');
         const bool toggleBrdfDown = m_input.IsKeyDown('R');
@@ -95,7 +99,7 @@ int Application::Run()
         {
             m_selectedTerrainTile = 0;
             if (!m_renderingSystem.LoadScene(RenderingSystem::Scene::Terrain))
-                MessageBoxW(m_window.GetHWND(), L"Cannot load Terrain. Check HightMap/R1C1.png through R4C4.png next to the executable (all 16, same dimensions). The combined MapNG_Batch_Heightmap_Grid.png is used only when no tiles exist. See debug output for the exact file.", L"Terrain", MB_OK | MB_ICONERROR);
+                MessageBoxW(m_window.GetHWND(), L"Cannot load Terrain", L"Terrain", MB_OK | MB_ICONERROR);
         }
 
         const bool previousTileDown = m_input.IsKeyDown(VK_OEM_4);
@@ -104,12 +108,15 @@ int Application::Run()
         const UINT tileCount = m_renderingSystem.GetTerrainTileCount();
         const bool lodDown = m_input.IsKeyDown('L');
         const bool debugDown = m_input.IsKeyDown('V');
+
         if (tileCount > 0 && lodDown && !m_toggleTerrainLodWasDown)
             m_renderingSystem.SetTerrainForcedLod(m_renderingSystem.GetTerrainForcedLod() + 1);
         if (tileCount > 0 && debugDown && !m_toggleTerrainDebugWasDown)
             m_renderingSystem.SetTerrainLodDebug(!m_renderingSystem.IsTerrainLodDebug());
+
         m_toggleTerrainLodWasDown = lodDown;
         m_toggleTerrainDebugWasDown = debugDown;
+
         if (tileCount > 0)
         {
             if (previousTileDown && !m_previousTileWasDown)
@@ -120,6 +127,7 @@ int Application::Run()
                 m_renderingSystem.SetTerrainTileEnabled(m_selectedTerrainTile,
                     !m_renderingSystem.IsTerrainTileEnabled(m_selectedTerrainTile));
         }
+
         if (tileCount > 0 || scene1Down || scene2Down || scene3Down || scene4Down || scene5Down ||
             previousTileDown || nextTileDown || toggleTileDown)
         {
@@ -141,6 +149,7 @@ int Application::Run()
                 swprintf_s(title, L"KG_Laba4 - DX12 Final | Scenes 1-5 (5: Terrain)");
             SetWindowTextW(m_window.GetHWND(), title);
         }
+
         m_previousTileWasDown = previousTileDown;
         m_nextTileWasDown = nextTileDown;
         m_toggleTileWasDown = toggleTileDown;
